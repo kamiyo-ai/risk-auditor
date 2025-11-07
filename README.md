@@ -1,16 +1,25 @@
-# Risk Auditor
+![header](https://github.com/user-attachments/assets/6ad065ce-a087-488e-bf2a-101059a911b0)
 
-Token approval security scanner for EVM chains with x402 micropayments.
+# KAMIYO リスクオーディター | Risk Auditor
+
+Token approval security scanner for EVM chains with x402 micropayments on Solana.
+
+## Features
+
+- Scans token approvals across 7 EVM chains via blockchain explorer APIs
+- Detects unlimited approvals (MAX_UINT256), stale approvals (6+ months), exploited protocols
+- Generates ERC20 revocation transactions
+- Cross-references KAMIYO exploit database for protocol risk assessment
 
 ## API
 
 ### GET /approval-audit
 
-Scans wallet for risky token approvals across 7 EVM chains.
+Scans wallet for risky token approvals.
 
 **Query:**
 - `wallet`: Ethereum address (required)
-- `chains`: ethereum,polygon,base,arbitrum,optimism,bsc,avalanche (optional)
+- `chains`: ethereum,polygon,base,arbitrum,optimism,bsc,avalanche (optional, default: ethereum)
 
 **Response:**
 ```json
@@ -21,7 +30,13 @@ Scans wallet for risky token approvals across 7 EVM chains.
     "allowance": "0xfff...",
     "is_unlimited": true
   }],
-  "risk_flags": {...},
+  "risk_flags": {
+    "0x...-0x...": [{
+      "type": "unlimited",
+      "severity": "high",
+      "description": "..."
+    }]
+  },
   "revoke_tx_data": [{
     "to": "0x...",
     "data": "0x095ea7b3...",
@@ -38,11 +53,129 @@ Recent protocol exploits. Params: `protocol`, `chain`, `limit`.
 
 Protocol risk score (0-100). Param: `chain`.
 
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Risk Auditor API                         │
+│                    (Express.js + x402 Payments)                 │
+└────────────┬────────────────────────────────────┬───────────────┘
+             │                                    │
+     ┌───────▼─────────┐                 ┌────────▼────────┐
+     │  /approval-audit│                 │ /risk-score     │
+     │    Endpoint     │                 │  /exploits      │
+     └───────┬─────────┘                 └────────┬────────┘
+             │                                    │
+    ┌────────▼──────────────────────────┐        │
+    │   ApprovalsRouteHandler           │        │
+    │   ┌───────────────────────────┐   │        │
+    │   │ 1. Scan Approvals         │   │        │
+    │   │ 2. Detect Risks           │   │        │
+    │   │ 3. Generate Revocations   │   │        │
+    │   └───────────────────────────┘   │        │
+    └─┬─────────┬──────────┬────────────┘        │
+      │         │          │                      │
+┌─────▼─────┐ ┌▼──────────▼───┐     ┌───────────▼──────────┐
+│ Approval  │ │ RiskDetector  │     │    DataService       │
+│  Scanner  │ │               │     │  (Exploit Database)  │
+└─────┬─────┘ └───────┬───────┘     └──────────┬───────────┘
+      │               │                        │
+      │      ┌────────▼────────┐               │
+      │      │ Exploit History │◄──────────────┘
+      │      │   Cross-Ref     │
+      │      └─────────────────┘
+      │
+┌─────▼─────────────────────────────────────────────────┐
+│            Blockchain Explorer APIs                   │
+│  Etherscan │ Polygonscan │ Arbiscan │ Basescan │ ... │
+└───────────────────────────────────────────────────────┘
+```
+
+### Data Flow
+
+```
+User Request
+    │
+    ├─► wallet: 0x742d35...
+    ├─► chains: [ethereum, polygon]
+    └─► x402: payment signature
+         │
+         ▼
+    ┌─────────────────┐
+    │ ApprovalScanner │
+    └────────┬────────┘
+             │
+    ┌────────▼──────────────────────────────┐
+    │  1. Fetch approval events             │
+    │  2. Query current allowances          │
+    │  3. Filter active approvals           │
+    └────────┬──────────────────────────────┘
+             │
+             ▼
+      ┌───────────────┐
+      │ RiskDetector  │
+      └───────┬───────┘
+              │
+    ┌─────────┼─────────┐
+    │         │         │
+ Unlimited  Stale  Exploited
+ Approval   (6mo)  Protocol
+    │         │         │
+    └─────────┼─────────┘
+              │
+    ┌─────────▼──────────┐
+    │ TransactionGenerator│
+    │ approve(addr, 0)    │
+    └─────────┬───────────┘
+              │
+     Revocation TX Data
+```
+
+### Payment Flow
+
+```
+┌──────────┐                                    ┌────────────────┐
+│  Client  │                                    │  Risk Auditor  │
+└─────┬────┘                                    └────────┬───────┘
+      │                                                  │
+      │  1. Create Solana transfer (0.001 SOL)          │
+      │ ────────────────────────────────────────────►   │
+      │                                                  │
+      │  2. Get transaction signature                   │
+      │ ◄────────────────────────────────────────────   │
+      │                                                  │
+      │  3. API Request with X-PAYMENT header           │
+      │     X-PAYMENT: base64({                         │
+      │       x402Version: 1,                            │
+      │       payload: {                                 │
+      │         signature: "5KW...",                     │
+      │         amount: "1000000",                       │
+      │         recipient: "CE4BW..."                    │
+      │       }                                          │
+      │     })                                           │
+      │ ────────────────────────────────────────────►   │
+      │                                         ┌────────▼────────┐
+      │                                         │ x402Middleware  │
+      │                                         │  1. Parse       │
+      │                                         │  2. Verify sig  │
+      │                                         │  3. Check cache │
+      │                                         └────────┬────────┘
+      │                                                  │
+      │  4. Response with approval data                 │
+      │ ◄────────────────────────────────────────────   │
+      │                                                  │
+      │  5. Additional requests (1h cache)              │
+      │ ────────────────────────────────────────────►   │
+      │ ◄────────────────────────────────────────────   │
+```
+
 ## Payment
 
 0.001 SOL per request. Include Solana transaction signature in `X-PAYMENT` header (base64 JSON).
 
 Wallet: `CE4BW1g1vuaS8hRQAGEABPi5PCuKBfJUporJxmdinCsY`
+
+Payment signature cached for 1 hour (multiple requests per transaction).
 
 ## Development
 
