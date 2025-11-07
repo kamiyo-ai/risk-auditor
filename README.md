@@ -356,14 +356,37 @@ User Request
 - Structured JSON logging
 - Input sanitization
 
-## Testing
+## Testing and Validation
 
-The implementation has been validated against:
+The implementation has been validated against all bounty acceptance criteria:
 
 1. **Etherscan API Compatibility**: Approval data matches Etherscan for major tokens
+   - Test wallet: Vitalik.eth (0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb)
+   - Verified token addresses, spender addresses, and allowance values match
+   - See [VALIDATION.md](VALIDATION.md) for detailed test results
+
 2. **Risk Detection Accuracy**: Correctly identifies unlimited approvals (MAX_UINT256)
+   - Unlimited approvals: MAX_UINT256 detection with HIGH severity
+   - Stale approvals: 6+ months old with MEDIUM severity
+   - Exploited protocols: Cross-referenced with KAMIYO exploit database
+   - Suspicious spenders: Known scam address flagging
+
 3. **Transaction Generation**: Valid ERC20 approve(spender, 0) calldata
+   - Function selector: 0x095ea7b3 (ERC20 approve)
+   - Correct encoding: spender address + zero amount
+   - EIP-155 chain ID support
+   - Tested on testnet - successfully revokes approvals
+
 4. **x402 Integration**: Solana payment verification and caching
+   - On-chain signature verification
+   - Payment replay protection (1-hour cache)
+   - 0.001 SOL per request
+   - Multiple requests per payment transaction
+
+**Documentation**:
+- [VALIDATION.md](VALIDATION.md) - Complete test results and Etherscan comparison
+- [DEPLOYMENT.md](DEPLOYMENT.md) - Deployment guide for Render/Docker
+- [COMPARISON.md](COMPARISON.md) - Feature comparison with competing submissions
 
 ## Bounty Compliance
 
@@ -379,6 +402,55 @@ The implementation has been validated against:
 **Production URL:** `https://risk-auditor.kamiyo.ai`
 
 Access via x402 payment protocol (0.001 SOL per request)
+
+## Quick Start
+
+### Using TypeScript SDK
+
+```typescript
+import RiskAuditorClient from './examples/client-library';
+import { Keypair } from '@solana/web3.js';
+
+// Initialize client with your Solana keypair
+const payer = Keypair.fromSecretKey(yourSecretKey);
+const client = new RiskAuditorClient(payer);
+
+// Audit wallet approvals
+const result = await client.auditApprovals({
+  wallet: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb',
+  chains: ['ethereum', 'polygon']
+});
+
+console.log(`Found ${result.risky_approvals} risky approvals`);
+```
+
+See [examples/client-library.ts](examples/client-library.ts) for complete SDK documentation.
+
+### Using cURL
+
+```bash
+# Run the simple curl example
+./examples/simple-curl.sh
+
+# Or manually:
+# 1. Create Solana payment
+SIGNATURE=$(solana transfer CE4BW1g1vuaS8hRQAGEABPi5PCuKBfJUporJxmdinCsY 0.001 --output json-compact | jq -r '.signature')
+
+# 2. Create x402 header
+PAYMENT=$(echo '{"x402Version":1,"payload":{"signature":"'$SIGNATURE'","amount":"1000000","recipient":"CE4BW1g1vuaS8hRQAGEABPi5PCuKBfJUporJxmdinCsY"}}' | base64)
+
+# 3. Call API
+curl "https://risk-auditor.kamiyo.ai/approval-audit?wallet=0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb&chains=ethereum" \
+  -H "X-PAYMENT: $PAYMENT"
+```
+
+## Resources
+
+- [TypeScript SDK](examples/client-library.ts) - Production-ready client library
+- [cURL Example](examples/simple-curl.sh) - Bash script for quick testing
+- [Validation Tests](VALIDATION.md) - Etherscan comparison and test results
+- [Deployment Guide](DEPLOYMENT.md) - Deploy to Render/Docker
+- [Competition Analysis](COMPARISON.md) - Feature comparison with other submissions
 
 ## License
 
